@@ -272,338 +272,351 @@ func (vm *vm) executeWithContext(context Value, statements ...ast.Node) (Value, 
 		returnErr   error
 	)
 	for _, statement := range statements {
-		switch statement.(type) {
-		case ast.IfBlock:
-			truthy := false
-			ifBlock := statement.(ast.IfBlock)
-			switch ifBlock.Condition.(type) {
-			case ast.Boolean:
-				truthy = ifBlock.Condition.(ast.Boolean).Value
-			case ast.BareReference:
-				truthy = ifBlock.Condition.(ast.BareReference).Name == "nil"
-			default:
-				truthy = true
-			}
+		returnValue, returnErr = vm.executeOneStatementWithContext(context, statement)
+		if returnErr != nil {
+			return nil, returnErr
+		}
+	}
 
-			if truthy {
-				returnValue, returnErr = vm.executeWithContext(context, ifBlock.Body...)
-			} else {
-				returnValue, returnErr = vm.executeWithContext(context, ifBlock.Else...)
-			}
-		case ast.Alias:
-			// FIXME: assumes that the context will be a module, but could also be a class
-			aliasNode := statement.(ast.Alias)
-			contextModule := context.(Module)
+	return returnValue, nil
+}
 
-			m, err := contextModule.InstanceMethod(aliasNode.From.Name)
-			if err != nil {
-				returnErr = NewNameError(aliasNode.From.Name, contextModule.String(), contextModule.String(), vm.stack.String())
-				return returnValue, returnErr
-			}
+func (vm *vm) executeOneStatementWithContext(context Value, statement ast.Node) (Value, error) {
+	var (
+		returnValue Value
+		returnErr   error
+	)
 
-			contextModule.AddInstanceMethod(NewNativeMethod(aliasNode.To.Name, vm, vm, func(self Value, block Block, args ...Value) (Value, error) {
-				return m.Execute(self, block, args...)
-			}))
-
-		case ast.ModuleDecl:
-			moduleNode := statement.(ast.ModuleDecl)
-			theModule := NewModule(moduleNode.Name, vm, vm)
-			vm.CurrentModules[moduleNode.Name] = theModule
-
-			_, err := vm.executeWithContext(theModule, moduleNode.Body...)
-			if err != nil {
-				returnErr = err
-			}
-
-			returnValue = theModule
-
-		case ast.ClassDecl:
-			classNode := statement.(ast.ClassDecl)
-			theClass := NewUserDefinedClass(classNode.Name, vm, vm)
-			vm.CurrentClasses[classNode.FullName()] = theClass
-
-			_, err := vm.executeWithContext(theClass, classNode.Body...)
-			if err != nil {
-				returnErr = err
-			} else {
-				returnValue = theClass
-			}
-
-		case ast.FuncDecl:
-			funcNode := statement.(ast.FuncDecl)
-			method := NewRubyMethod(
-				funcNode.MethodName(),
-				funcNode.MethodArgs(),
-				funcNode.Body,
-				vm,
-				vm,
-				func(self Value, method *RubyMethod) (Value, error) {
-					vm.localVariableStack.unshift()
-					defer vm.localVariableStack.shift()
-
-					for _, arg := range method.Args() {
-						vm.localVariableStack.store(arg.Name, arg.Value)
-					}
-
-					return vm.executeWithContext(self, method.Body()...)
-				})
-			returnValue = method
-
-			if context == vm.ObjectSpace["main"] && funcNode.Target == nil {
-				vm.CurrentModules["Kernel"].AddPrivateMethod(method)
-			} else {
-				switch funcNode.Target.(type) {
-				case ast.Self:
-					context.AddMethod(method)
-				case nil:
-					context.(Module).AddInstanceMethod(method)
-				default:
-					value, err := vm.executeWithContext(context, funcNode.Target)
-					if err != nil {
-						return nil, err
-					}
-
-					value.AddMethod(method)
-				}
-			}
-
-		case ast.Nil:
-			returnValue = vm.singletons["nil"]
-		case ast.SimpleString:
-			returnValue = NewString(statement.(ast.SimpleString).Value, vm, vm)
-		case ast.InterpolatedString:
-			returnValue = NewString(statement.(ast.InterpolatedString).Value, vm, vm)
+	switch statement.(type) {
+	case ast.IfBlock:
+		truthy := false
+		ifBlock := statement.(ast.IfBlock)
+		switch ifBlock.Condition.(type) {
 		case ast.Boolean:
-			if statement.(ast.Boolean).Value {
-				returnValue = vm.singletons["true"]
-			} else {
-				returnValue = vm.singletons["false"]
-			}
-		case ast.GlobalVariable:
-			returnValue = vm.CurrentGlobals[statement.(ast.GlobalVariable).Name]
-		case ast.ConstantInt:
-			returnValue = NewFixnum(statement.(ast.ConstantInt).Value, vm, vm)
-		case ast.ConstantFloat:
-			returnValue = NewFloat(statement.(ast.ConstantFloat).Value, vm)
-		case ast.Symbol:
-			name := statement.(ast.Symbol).Name
-			maybe, ok := vm.CurrentSymbols[name]
-			if !ok {
-				returnValue = NewSymbol(name, vm)
-				vm.CurrentSymbols[name] = returnValue
-			} else {
-				returnValue = maybe
-			}
+			truthy = ifBlock.Condition.(ast.Boolean).Value
 		case ast.BareReference:
-			name := statement.(ast.BareReference).Name
-			maybe, err := vm.localVariableStack.retrieve(name)
-			if err == nil {
+			truthy = ifBlock.Condition.(ast.BareReference).Name == "nil"
+		default:
+			truthy = true
+		}
+
+		if truthy {
+			returnValue, returnErr = vm.executeWithContext(context, ifBlock.Body...)
+		} else {
+			returnValue, returnErr = vm.executeWithContext(context, ifBlock.Else...)
+		}
+	case ast.Alias:
+		aliasNode := statement.(ast.Alias)
+		contextModule := context.(Module)
+
+		m, err := contextModule.InstanceMethod(aliasNode.From.Name)
+		if err != nil {
+			returnErr = NewNameError(aliasNode.From.Name, contextModule.String(), contextModule.String(), vm.stack.String())
+			return returnValue, returnErr
+		}
+
+		contextModule.AddInstanceMethod(NewNativeMethod(aliasNode.To.Name, vm, vm, func(self Value, block Block, args ...Value) (Value, error) {
+			return m.Execute(self, block, args...)
+		}))
+
+	case ast.ModuleDecl:
+		moduleNode := statement.(ast.ModuleDecl)
+		theModule := NewModule(moduleNode.Name, vm, vm)
+		vm.CurrentModules[moduleNode.Name] = theModule
+
+		_, err := vm.executeWithContext(theModule, moduleNode.Body...)
+		if err != nil {
+			returnErr = err
+		}
+
+		returnValue = theModule
+
+	case ast.ClassDecl:
+		classNode := statement.(ast.ClassDecl)
+		theClass := NewUserDefinedClass(classNode.Name, vm, vm)
+		vm.CurrentClasses[classNode.FullName()] = theClass
+
+		_, err := vm.executeWithContext(theClass, classNode.Body...)
+		if err != nil {
+			returnErr = err
+		} else {
+			returnValue = theClass
+		}
+
+	case ast.FuncDecl:
+		funcNode := statement.(ast.FuncDecl)
+		method := NewRubyMethod(
+			funcNode.MethodName(),
+			funcNode.MethodArgs(),
+			funcNode.Body,
+			vm,
+			vm,
+			func(self Value, method *RubyMethod) (Value, error) {
+				vm.localVariableStack.unshift()
+				defer vm.localVariableStack.shift()
+
+				for _, arg := range method.Args() {
+					vm.localVariableStack.store(arg.Name, arg.Value)
+				}
+
+				return vm.executeWithContext(self, method.Body()...)
+			})
+		returnValue = method
+
+		if context == vm.ObjectSpace["main"] && funcNode.Target == nil {
+			vm.CurrentModules["Kernel"].AddPrivateMethod(method)
+		} else {
+			switch funcNode.Target.(type) {
+			case ast.Self:
+				context.AddMethod(method)
+			case nil:
+				context.(Module).AddInstanceMethod(method)
+			default:
+				value, err := vm.executeWithContext(context, funcNode.Target)
+				if err != nil {
+					return nil, err
+				}
+
+				value.AddMethod(method)
+			}
+		}
+
+	case ast.Nil:
+		returnValue = vm.singletons["nil"]
+	case ast.SimpleString:
+		returnValue = NewString(statement.(ast.SimpleString).Value, vm, vm)
+	case ast.InterpolatedString:
+		returnValue = NewString(statement.(ast.InterpolatedString).Value, vm, vm)
+	case ast.Boolean:
+		if statement.(ast.Boolean).Value {
+			returnValue = vm.singletons["true"]
+		} else {
+			returnValue = vm.singletons["false"]
+		}
+	case ast.GlobalVariable:
+		returnValue = vm.CurrentGlobals[statement.(ast.GlobalVariable).Name]
+	case ast.ConstantInt:
+		returnValue = NewFixnum(statement.(ast.ConstantInt).Value, vm, vm)
+	case ast.ConstantFloat:
+		returnValue = NewFloat(statement.(ast.ConstantFloat).Value, vm)
+	case ast.Symbol:
+		name := statement.(ast.Symbol).Name
+		maybe, ok := vm.CurrentSymbols[name]
+		if !ok {
+			returnValue = NewSymbol(name, vm)
+			vm.CurrentSymbols[name] = returnValue
+		} else {
+			returnValue = maybe
+		}
+	case ast.BareReference:
+		name := statement.(ast.BareReference).Name
+		maybe, err := vm.localVariableStack.retrieve(name)
+		if err == nil {
+			returnValue = maybe
+		} else {
+			maybe, ok := vm.ObjectSpace[name]
+			if ok {
 				returnValue = maybe
 			} else {
-				maybe, ok := vm.ObjectSpace[name]
+				maybe, ok := vm.CurrentClasses[name]
 				if ok {
 					returnValue = maybe
 				} else {
-					maybe, ok := vm.CurrentClasses[name]
+					maybe, ok := vm.CurrentModules[name]
 					if ok {
 						returnValue = maybe
 					} else {
-						maybe, ok := vm.CurrentModules[name]
-						if ok {
-							returnValue = maybe
-						} else {
-							returnValue = nil
-							returnErr = NewNameError(name, context.String(), context.Class().String(), vm.stack.String())
-						}
+						returnValue = nil
+						returnErr = NewNameError(name, context.String(), context.Class().String(), vm.stack.String())
 					}
 				}
 			}
-		case ast.CallExpression:
-			var method Method
-			callExpr := statement.(ast.CallExpression)
-
-			var (
-				target           Value
-				usePrivateMethod bool // FIXME: this should be unnecessary now
-			)
-
-			if callExpr.Target != nil {
-				target, returnErr = vm.executeWithContext(context, callExpr.Target)
-				if returnErr != nil {
-					return nil, returnErr
-				}
-			} else {
-				usePrivateMethod = true
-				target = context
-			}
-
-			if target == nil {
-				nilValue := vm.singletons["nil"]
-				return nil, NewNoMethodError(callExpr.Func.Name, nilValue.String(), nilValue.Class().String(), vm.stack.String())
-			}
-
-			method, err := target.Method(callExpr.Func.Name)
-			if err != nil && usePrivateMethod {
-				method, err = target.PrivateMethod(callExpr.Func.Name)
-			}
-
-			if err != nil {
-				return nil, err
-			}
-
-			args := []Value{}
-			for _, astArgument := range callExpr.Args {
-				arg, err := vm.executeWithContext(context, astArgument)
-				if err != nil {
-					return nil, err
-				}
-
-				args = append(args, arg)
-			}
-
-			vm.stack.Unshift(method.Name(), vm.currentFilename)
-			defer vm.stack.Shift()
-
-			var block Block
-			if callExpr.OptionalBlock.Provided() {
-				blockValue, err := vm.executeWithContext(context, callExpr.OptionalBlock)
-
-				if err != nil {
-					return nil, err
-				}
-
-				block = blockValue.(Block)
-			}
-
-			returnValue, returnErr = method.Execute(target, block, args...)
-			if returnErr != nil {
-				return returnValue, returnErr
-			}
-
-		case ast.Block:
-			astBlock := statement.(ast.Block)
-			block := NewBlock(context, astBlock.Args, astBlock.Body, vm)
-			returnValue = block.(Value)
-
-		case ast.Assignment:
-			var err error
-			assignment := statement.(ast.Assignment)
-			returnValue, err = vm.executeWithContext(context, assignment.RHS)
-			if err != nil {
-				return nil, err
-			}
-
-			switch assignment.LHS.(type) {
-			case ast.BareReference:
-				ref := assignment.LHS.(ast.BareReference)
-				vm.ObjectSpace[ref.Name] = returnValue
-			case ast.GlobalVariable:
-				globalVar := assignment.LHS.(ast.GlobalVariable)
-				vm.CurrentGlobals[globalVar.Name] = returnValue
-			case ast.InstanceVariable:
-				iVar := assignment.LHS.(ast.InstanceVariable)
-				context.SetInstanceVariable(iVar.Name, returnValue)
-			default:
-				panic(fmt.Sprintf("unimplemented assignment failure: %#v", assignment.LHS))
-			}
-
-		case ast.FileNameConstReference:
-			returnValue = NewString(vm.currentFilename, vm, vm)
-		case ast.Begin:
-			begin := statement.(ast.Begin)
-			_, err := vm.executeWithContext(context, begin.Body...)
-
-			if err != nil {
-				matchingRescue := false
-
-				rubyErr, ok := err.(Value)
-				if !ok {
-					panic(context)
-					return nil, err
-				}
-
-				for _, rescue := range begin.Rescue {
-					if matchingRescue {
-						break
-					}
-
-					r := rescue.(ast.Rescue)
-					for _, exceptionClass := range r.Exception.Classes {
-						if exceptionClass.Name == rubyErr.String() {
-							_, err = vm.executeWithContext(context, r.Body...)
-							if err == nil {
-								matchingRescue = true
-								break
-							}
-						}
-					}
-				}
-			}
-
-			if err != nil {
-				returnErr = err
-			}
-		case ast.Array:
-			arrayValue, _ := vm.CurrentClasses["Array"].New(vm, vm)
-			array := arrayValue.(*Array)
-			for _, node := range statement.(ast.Array).Nodes {
-				value, err := vm.executeWithContext(context, node)
-				if err != nil {
-					return nil, err
-				}
-
-				array.Append(value)
-			}
-
-			returnValue = array
-
-		case ast.Hash:
-			hashValue, _ := vm.CurrentClasses["Hash"].New(vm, vm)
-			hash := hashValue.(*Hash)
-			for _, keyPair := range statement.(ast.Hash).Pairs {
-				key, err := vm.executeWithContext(context, keyPair.Key)
-				if err != nil {
-					returnErr = err
-					break
-				}
-
-				val, err := vm.executeWithContext(context, keyPair.Value)
-				if err != nil {
-					returnErr = err
-					break
-				}
-
-				hash.Add(key, val)
-			}
-
-			returnValue = hash
-		case ast.Ternary:
-			ternary := statement.(ast.Ternary)
-			value, err := vm.executeWithContext(context, ternary.Condition)
-			if err != nil {
-				returnErr = err
-			} else {
-				if value.IsTruthy() {
-					returnValue, returnErr = vm.executeWithContext(context, ternary.True)
-				} else {
-					returnValue, returnErr = vm.executeWithContext(context, ternary.False)
-				}
-
-			}
-
-		case ast.Class:
-			class := statement.(ast.Class)
-			className := class.FullName()
-			value, ok := vm.CurrentClasses[className]
-			if !ok {
-				returnErr = NewNameError(className, context.String(), context.Class().String(), vm.stack.String())
-			} else {
-				returnValue = value
-			}
-
-		default:
-			panic(fmt.Sprintf("handled unknown statement type: %T:\n\t\n => %#v\n", statement, statement))
 		}
+	case ast.CallExpression:
+		var method Method
+		callExpr := statement.(ast.CallExpression)
+
+		var (
+			target           Value
+			usePrivateMethod bool // FIXME: this should be unnecessary now
+		)
+
+		if callExpr.Target != nil {
+			target, returnErr = vm.executeWithContext(context, callExpr.Target)
+			if returnErr != nil {
+				return nil, returnErr
+			}
+		} else {
+			usePrivateMethod = true
+			target = context
+		}
+
+		if target == nil {
+			nilValue := vm.singletons["nil"]
+			return nil, NewNoMethodError(callExpr.Func.Name, nilValue.String(), nilValue.Class().String(), vm.stack.String())
+		}
+
+		method, err := target.Method(callExpr.Func.Name)
+		if err != nil && usePrivateMethod {
+			method, err = target.PrivateMethod(callExpr.Func.Name)
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		args := []Value{}
+		for _, astArgument := range callExpr.Args {
+			arg, err := vm.executeWithContext(context, astArgument)
+			if err != nil {
+				return nil, err
+			}
+
+			args = append(args, arg)
+		}
+
+		vm.stack.Unshift(method.Name(), vm.currentFilename)
+		defer vm.stack.Shift()
+
+		var block Block
+		if callExpr.OptionalBlock.Provided() {
+			blockValue, err := vm.executeWithContext(context, callExpr.OptionalBlock)
+
+			if err != nil {
+				return nil, err
+			}
+
+			block = blockValue.(Block)
+		}
+
+		returnValue, returnErr = method.Execute(target, block, args...)
+		if returnErr != nil {
+			return returnValue, returnErr
+		}
+
+	case ast.Block:
+		astBlock := statement.(ast.Block)
+		block := NewBlock(context, astBlock.Args, astBlock.Body, vm)
+		returnValue = block.(Value)
+
+	case ast.Assignment:
+		var err error
+		assignment := statement.(ast.Assignment)
+		returnValue, err = vm.executeWithContext(context, assignment.RHS)
+		if err != nil {
+			return nil, err
+		}
+
+		switch assignment.LHS.(type) {
+		case ast.BareReference:
+			ref := assignment.LHS.(ast.BareReference)
+			vm.ObjectSpace[ref.Name] = returnValue
+		case ast.GlobalVariable:
+			globalVar := assignment.LHS.(ast.GlobalVariable)
+			vm.CurrentGlobals[globalVar.Name] = returnValue
+		case ast.InstanceVariable:
+			iVar := assignment.LHS.(ast.InstanceVariable)
+			context.SetInstanceVariable(iVar.Name, returnValue)
+		default:
+			panic(fmt.Sprintf("unimplemented assignment failure: %#v", assignment.LHS))
+		}
+
+	case ast.FileNameConstReference:
+		returnValue = NewString(vm.currentFilename, vm, vm)
+	case ast.Begin:
+		begin := statement.(ast.Begin)
+		_, err := vm.executeWithContext(context, begin.Body...)
+
+		if err != nil {
+			matchingRescue := false
+
+			rubyErr, ok := err.(Value)
+			if !ok {
+				panic(context)
+				return nil, err
+			}
+
+			for _, rescue := range begin.Rescue {
+				if matchingRescue {
+					break
+				}
+
+				r := rescue.(ast.Rescue)
+				for _, exceptionClass := range r.Exception.Classes {
+					if exceptionClass.Name == rubyErr.String() {
+						_, err = vm.executeWithContext(context, r.Body...)
+						if err == nil {
+							matchingRescue = true
+							break
+						}
+					}
+				}
+			}
+		}
+
+		if err != nil {
+			returnErr = err
+		}
+	case ast.Array:
+		arrayValue, _ := vm.CurrentClasses["Array"].New(vm, vm)
+		array := arrayValue.(*Array)
+		for _, node := range statement.(ast.Array).Nodes {
+			value, err := vm.executeWithContext(context, node)
+			if err != nil {
+				return nil, err
+			}
+
+			array.Append(value)
+		}
+
+		returnValue = array
+
+	case ast.Hash:
+		hashValue, _ := vm.CurrentClasses["Hash"].New(vm, vm)
+		hash := hashValue.(*Hash)
+		for _, keyPair := range statement.(ast.Hash).Pairs {
+			key, err := vm.executeWithContext(context, keyPair.Key)
+			if err != nil {
+				returnErr = err
+				break
+			}
+
+			val, err := vm.executeWithContext(context, keyPair.Value)
+			if err != nil {
+				returnErr = err
+				break
+			}
+
+			hash.Add(key, val)
+		}
+
+		returnValue = hash
+	case ast.Ternary:
+		ternary := statement.(ast.Ternary)
+		value, err := vm.executeWithContext(context, ternary.Condition)
+		if err != nil {
+			returnErr = err
+		} else {
+			if value.IsTruthy() {
+				returnValue, returnErr = vm.executeWithContext(context, ternary.True)
+			} else {
+				returnValue, returnErr = vm.executeWithContext(context, ternary.False)
+			}
+
+		}
+
+	case ast.Class:
+		class := statement.(ast.Class)
+		className := class.FullName()
+		value, ok := vm.CurrentClasses[className]
+		if !ok {
+			returnErr = NewNameError(className, context.String(), context.Class().String(), vm.stack.String())
+		} else {
+			returnValue = value
+		}
+
+	default:
+		panic(fmt.Sprintf("handled unknown statement type: %T:\n\t\n => %#v\n", statement, statement))
 	}
 
 	return returnValue, returnErr
